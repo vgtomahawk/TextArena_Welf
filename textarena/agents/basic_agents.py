@@ -5,8 +5,9 @@ from typing import Optional, Tuple
 
 from textarena.core import Agent
 import textarena as ta 
+import litellm
 
-__all__ = ["HumanAgent", "OpenRouterAgent", "GeminiAgent", "OpenAIAgent", "HFLocalAgent", "CerebrasAgent", "AWSBedrockAgent", "AnthropicAgent", "GroqAgent", "OllamaAgent", "LlamaCppAgent"]
+__all__ = ["HumanAgent", "OpenRouterAgent", "GeminiAgent", "OpenAIAgent", "HFLocalAgent", "CerebrasAgent", "AWSBedrockAgent", "AnthropicAgent", "GroqAgent", "OllamaAgent", "LlamaCppAgent", "LiteLLMAgent"]
 STANDARD_GAME_PROMPT = "You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format."
     
 
@@ -27,6 +28,122 @@ class HumanAgent(Agent):
         """
         print("\n\n+++ +++ +++") # for easies visualization of what is part of each turns observation
         return input(f"Current observations: {observation}\nPlease enter the action: ")
+
+
+
+class LiteLLMAgent(Agent):
+    """ Agent class using LiteLLM to support multiple providers seamlessly. """
+
+    def __init__(self, model_name: str, system_prompt: Optional[str] = STANDARD_GAME_PROMPT,
+                 verbose: bool = False, temperature: float = 0.7, **kwargs):
+        """
+        Args:
+            model_name (str): The model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet-20241022')
+            system_prompt (Optional[str]): The system prompt to use
+            verbose (bool): If True, additional debug info will be printed
+            temperature (float): Temperature for generation
+            **kwargs: Additional keyword arguments to pass to litellm.completion()
+        """
+        super().__init__()
+
+        if litellm is None:
+            raise ImportError("litellm package is required for LiteLLMAgent. Install it with: pip install litellm")
+
+        self.model_name = model_name
+        self.verbose = verbose
+        self.system_prompt = system_prompt
+        self.temperature = temperature
+        self.kwargs = kwargs
+
+        # Set up API keys from environment
+        self._setup_api_keys()
+
+    def _setup_api_keys(self):
+        """Setup API keys for different providers."""
+        # LiteLLM will automatically pick up these environment variables
+        api_keys = {
+            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+            "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
+            "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY"),
+            "TOGETHER_API_KEY": os.getenv("TOGETHER_API_KEY"),
+            "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY"),
+        }
+
+        # Set them in litellm if they exist
+        for key, value in api_keys.items():
+            if value:
+                if key == "OPENAI_API_KEY":
+                    litellm.openai_key = value
+                elif key == "ANTHROPIC_API_KEY":
+                    litellm.anthropic_key = value
+                elif key == "OPENROUTER_API_KEY":
+                    litellm.openrouter_key = value
+                elif key == "TOGETHER_API_KEY":
+                    litellm.together_key = value
+                elif key == "GOOGLE_API_KEY":
+                    litellm.google_key = value
+
+    def _make_request(self, observation: str) -> str:
+        """Make a single API request using LiteLLM."""
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": observation}
+        ]
+
+        response = litellm.completion(
+            model=self.model_name,
+            messages=messages,
+            temperature=self.temperature,
+            **self.kwargs
+        )
+
+        return response.choices[0].message.content.strip()
+
+    def _retry_request(self, observation: str, retries: int = 3, delay: int = 5) -> str:
+        """
+        Attempt to make an API request with retries.
+
+        Args:
+            observation (str): The input to process.
+            retries (int): The number of attempts to try.
+            delay (int): Seconds to wait between attempts.
+
+        Raises:
+            Exception: The last exception caught if all retries fail.
+        """
+        last_exception = None
+        for attempt in range(1, retries + 1):
+            try:
+                response = self._make_request(observation)
+                if self.verbose:
+                    print(f"\nModel: {self.model_name}")
+                    print(f"Observation: {observation}")
+                    print(f"Response: {response}")
+                return response
+
+            except Exception as e:
+                last_exception = e
+                print(f"Attempt {attempt} failed with error: {e}")
+                if attempt < retries:
+                    time.sleep(delay)
+        raise last_exception
+
+    def __call__(self, observation: str) -> str:
+        """
+        Process the observation using LiteLLM and return the action.
+
+        Args:
+            observation (str): The input string to process.
+
+        Returns:
+            str: The generated response.
+        """
+        if not isinstance(observation, str):
+            raise ValueError(f"Observation must be a string. Received type: {type(observation)}")
+        return self._retry_request(observation)
+
+
+
 
 
 class OpenRouterAgent(Agent):
